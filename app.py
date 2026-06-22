@@ -135,9 +135,10 @@ def mark_attendance(student_id):
 
 def gen_frames():
     global last_frame, last_recognized
-    cam = get_camera()
     while True:
-        ok, frame = cam.read()
+        with camera_lock:
+            cam = get_camera()
+            ok, frame = cam.read()
         if not ok:
             time.sleep(0.05)
             continue
@@ -151,12 +152,12 @@ def gen_frames():
 
             with recognition_lock:
                 idx, dist = compare_encodings(known_encodings, enc)
+                sid = known_ids[idx] if idx != -1 else None
 
             label = "Unknown"
             color = (0, 0, 220)
 
-            if idx != -1:
-                sid = known_ids[idx]
+            if sid is not None:
                 conn = get_db()
                 row  = conn.execute("SELECT name, roll_no FROM students WHERE id=?", (sid,)).fetchone()
                 conn.close()
@@ -229,11 +230,12 @@ def capture_face():
     if sid is None:
         return jsonify({"error": "student_id required"}), 400
 
-    cam = get_camera()
     samples = []
     attempts = 0
     while len(samples) < 20 and attempts < 60:
-        ok, frame = cam.read()
+        with camera_lock:
+            cam = get_camera()
+            ok, frame = cam.read()
         attempts += 1
         if not ok:
             time.sleep(0.05)

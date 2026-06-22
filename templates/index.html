@@ -784,7 +784,7 @@ async function loadStudents() {
       <td>${s.created ? s.created.split(" ")[0] : "—"}</td>
       <td>
         <button class="btn btn-danger" style="padding:5px 10px;font-size:0.78rem;"
-          onclick="deleteStudent(${s.id}, '${s.name}')">🗑 Delete</button>
+          onclick="deleteStudent(${s.id}, ${JSON.stringify(s.name)})">🗑 Delete</button>
       </td>
     </tr>
   `).join("");
