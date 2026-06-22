@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# App generated
+attendance.db
+encodings.pkl
+faces_db/
+reports/
+
+# IDE
+.vscode/
+.idea/
+*.swp

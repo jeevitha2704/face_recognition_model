@@ -1,0 +1,806 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Face Recognition Attendance System</title>
+<style>
+  /* ── Reset & Base ── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --navy:    #1A237E;
+    --indigo:  #283593;
+    --blue:    #3949AB;
+    --accent:  #5C6BC0;
+    --cyan:    #00BCD4;
+    --green:   #43A047;
+    --red:     #E53935;
+    --amber:   #FFB300;
+    --bg:      #F0F2FF;
+    --surface: #FFFFFF;
+    --text:    #1A1A2E;
+    --muted:   #6B7280;
+    --border:  #C5CAE9;
+    --shadow:  0 4px 24px rgba(26,35,126,0.10);
+    --radius:  12px;
+  }
+
+  body {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+  }
+
+  /* ── Header ── */
+  header {
+    background: linear-gradient(135deg, var(--navy) 0%, var(--blue) 100%);
+    color: #fff;
+    padding: 0 2rem;
+    height: 64px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    box-shadow: 0 2px 16px rgba(26,35,126,0.25);
+  }
+
+  header .brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 1.15rem;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+  }
+
+  header .brand .icon {
+    width: 36px; height: 36px;
+    background: rgba(255,255,255,0.15);
+    border-radius: 8px;
+    display: grid;
+    place-items: center;
+    font-size: 1.2rem;
+  }
+
+  .live-badge {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(255,255,255,0.12);
+    border-radius: 20px;
+    padding: 4px 12px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+  }
+
+  .live-dot {
+    width: 8px; height: 8px;
+    background: #69FF6E;
+    border-radius: 50%;
+    animation: pulse 1.5s infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50%       { opacity: 0.5; transform: scale(0.8); }
+  }
+
+  /* ── Nav Tabs ── */
+  .tabs {
+    display: flex;
+    gap: 4px;
+    background: var(--surface);
+    padding: 8px 2rem;
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 64px;
+    z-index: 99;
+  }
+
+  .tab-btn {
+    padding: 8px 20px;
+    border: none;
+    border-radius: 8px;
+    font-size: 0.88rem;
+    font-weight: 600;
+    cursor: pointer;
+    background: transparent;
+    color: var(--muted);
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .tab-btn:hover   { background: var(--bg); color: var(--navy); }
+  .tab-btn.active  { background: var(--navy); color: #fff; }
+
+  /* ── Layout ── */
+  main { padding: 1.5rem 2rem; max-width: 1280px; margin: 0 auto; }
+
+  .page { display: none; }
+  .page.active { display: block; }
+
+  /* ── Stat Cards ── */
+  .stats-row {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+  }
+
+  .stat-card {
+    background: var(--surface);
+    border-radius: var(--radius);
+    padding: 1.25rem 1.5rem;
+    box-shadow: var(--shadow);
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    border-left: 4px solid var(--accent);
+  }
+
+  .stat-card.green  { border-color: var(--green); }
+  .stat-card.red    { border-color: var(--red); }
+  .stat-card.cyan   { border-color: var(--cyan); }
+
+  .stat-icon {
+    width: 48px; height: 48px;
+    border-radius: 10px;
+    display: grid;
+    place-items: center;
+    font-size: 1.4rem;
+  }
+
+  .stat-card.green .stat-icon { background: #E8F5E9; }
+  .stat-card.red .stat-icon   { background: #FFEBEE; }
+  .stat-card.cyan .stat-icon  { background: #E0F7FA; }
+
+  .stat-val  { font-size: 2rem; font-weight: 800; line-height: 1; }
+  .stat-lbl  { font-size: 0.8rem; color: var(--muted); font-weight: 500; margin-top: 2px; }
+
+  /* ── Two-column grid ── */
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
+  .full    { grid-column: 1 / -1; }
+
+  /* ── Card ── */
+  .card {
+    background: var(--surface);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+
+  .card-head {
+    padding: 1rem 1.5rem;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .card-head h2 {
+    font-size: 0.95rem;
+    font-weight: 700;
+    color: var(--navy);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .card-body { padding: 1.25rem 1.5rem; }
+
+  /* ── Video Feed ── */
+  .video-wrap {
+    background: #000;
+    border-radius: 8px;
+    overflow: hidden;
+    position: relative;
+    aspect-ratio: 4/3;
+  }
+
+  .video-wrap img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+
+  .video-overlay {
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    padding: 8px 12px;
+    background: linear-gradient(transparent, rgba(0,0,0,0.6));
+    color: #fff;
+    font-size: 0.75rem;
+    font-weight: 500;
+  }
+
+  /* ── Form ── */
+  .form-group { margin-bottom: 1rem; }
+
+  label {
+    display: block;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--navy);
+    margin-bottom: 4px;
+  }
+
+  input, select {
+    width: 100%;
+    padding: 9px 12px;
+    border: 1.5px solid var(--border);
+    border-radius: 8px;
+    font-size: 0.88rem;
+    color: var(--text);
+    background: var(--surface);
+    transition: border-color 0.2s;
+    outline: none;
+  }
+
+  input:focus, select:focus { border-color: var(--blue); }
+
+  /* ── Buttons ── */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 9px 18px;
+    border: none;
+    border-radius: 8px;
+    font-size: 0.88rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+    text-decoration: none;
+  }
+
+  .btn-primary { background: var(--navy); color: #fff; }
+  .btn-primary:hover { background: var(--blue); transform: translateY(-1px); }
+
+  .btn-success { background: var(--green); color: #fff; }
+  .btn-success:hover { background: #388E3C; }
+
+  .btn-danger  { background: var(--red); color: #fff; }
+  .btn-danger:hover { background: #C62828; }
+
+  .btn-outline {
+    background: transparent;
+    border: 1.5px solid var(--navy);
+    color: var(--navy);
+  }
+  .btn-outline:hover { background: var(--navy); color: #fff; }
+
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none !important; }
+
+  .btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
+
+  /* ── Table ── */
+  .table-wrap { overflow-x: auto; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+
+  th {
+    background: var(--navy);
+    color: #fff;
+    padding: 10px 14px;
+    text-align: left;
+    font-weight: 600;
+    font-size: 0.78rem;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+  }
+
+  td {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+  }
+
+  tr:nth-child(even) td { background: #F5F6FF; }
+  tr:hover td { background: #EEF0FF; }
+
+  /* ── Badges ── */
+  .badge {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 20px;
+    font-size: 0.75rem;
+    font-weight: 600;
+  }
+
+  .badge-green  { background: #E8F5E9; color: #2E7D32; }
+  .badge-red    { background: #FFEBEE; color: #C62828; }
+  .badge-blue   { background: #E8EAF6; color: var(--navy); }
+
+  /* ── Progress Bar ── */
+  .progress-wrap { background: var(--border); border-radius: 99px; height: 8px; overflow: hidden; }
+  .progress-bar  { height: 100%; background: var(--green); border-radius: 99px; transition: width 0.5s ease; }
+
+  /* ── Toast ── */
+  #toast-container {
+    position: fixed;
+    bottom: 1.5rem;
+    right: 1.5rem;
+    z-index: 9999;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .toast {
+    padding: 12px 18px;
+    border-radius: 10px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #fff;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+    animation: slideIn 0.3s ease;
+    max-width: 320px;
+  }
+
+  .toast.success { background: var(--green); }
+  .toast.error   { background: var(--red); }
+  .toast.info    { background: var(--blue); }
+
+  @keyframes slideIn { from { transform: translateX(40px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+
+  /* ── Capture progress ── */
+  #capture-progress { display: none; margin-top: 10px; }
+  #capture-bar-wrap { background: var(--border); border-radius: 99px; height: 10px; overflow: hidden; margin-top: 6px; }
+  #capture-bar      { height: 100%; background: var(--cyan); width: 0%; transition: width 0.3s; }
+
+  /* ── Empty state ── */
+  .empty {
+    text-align: center;
+    padding: 2.5rem 1rem;
+    color: var(--muted);
+  }
+  .empty .icon { font-size: 2.5rem; margin-bottom: 8px; }
+
+  /* ── Date picker row ── */
+  .filter-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 1rem;
+  }
+  .filter-row input { width: auto; flex: none; }
+
+  /* ── Responsive ── */
+  @media (max-width: 768px) {
+    main { padding: 1rem; }
+    .two-col { grid-template-columns: 1fr; }
+    .stats-row { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<header>
+  <div class="brand">
+    <div class="icon">🎓</div>
+    Face Recognition Attendance System
+  </div>
+  <div class="live-badge">
+    <div class="live-dot"></div>
+    LIVE
+  </div>
+</header>
+
+<!-- Nav Tabs -->
+<div class="tabs">
+  <button class="tab-btn active" onclick="switchTab('dashboard')">📊 Dashboard</button>
+  <button class="tab-btn" onclick="switchTab('register')">👤 Register Student</button>
+  <button class="tab-btn" onclick="switchTab('attendance')">📋 Attendance</button>
+  <button class="tab-btn" onclick="switchTab('students')">🗂 Students</button>
+</div>
+
+<main>
+
+  <!-- ══ DASHBOARD ══ -->
+  <div id="page-dashboard" class="page active">
+    <div class="stats-row">
+      <div class="stat-card cyan">
+        <div class="stat-icon">👥</div>
+        <div>
+          <div class="stat-val" id="stat-total">—</div>
+          <div class="stat-lbl">Total Registered</div>
+        </div>
+      </div>
+      <div class="stat-card green">
+        <div class="stat-icon">✅</div>
+        <div>
+          <div class="stat-val" id="stat-present">—</div>
+          <div class="stat-lbl">Present Today</div>
+        </div>
+      </div>
+      <div class="stat-card red">
+        <div class="stat-icon">❌</div>
+        <div>
+          <div class="stat-val" id="stat-absent">—</div>
+          <div class="stat-lbl">Absent Today</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="two-col">
+      <!-- Live Feed -->
+      <div class="card">
+        <div class="card-head">
+          <h2>📷 Live Camera Feed</h2>
+        </div>
+        <div class="card-body">
+          <div class="video-wrap">
+            <img src="/video_feed" alt="Live Feed">
+            <div class="video-overlay">Auto-marking attendance when face is recognized</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Today's Attendance -->
+      <div class="card">
+        <div class="card-head">
+          <h2>📋 Today's Attendance</h2>
+          <button class="btn btn-primary" onclick="refreshDashboard()">🔄 Refresh</button>
+        </div>
+        <div class="card-body">
+          <div style="margin-bottom:10px;">
+            <div style="display:flex;justify-content:space-between;font-size:0.8rem;color:var(--muted);margin-bottom:4px;">
+              <span>Attendance Rate</span>
+              <span id="rate-text">0%</span>
+            </div>
+            <div class="progress-wrap">
+              <div class="progress-bar" id="progress-bar" style="width:0%"></div>
+            </div>
+          </div>
+          <div class="table-wrap" style="max-height:340px;overflow-y:auto;">
+            <table>
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Roll No</th>
+                  <th>Time In</th>
+                </tr>
+              </thead>
+              <tbody id="today-table">
+                <tr><td colspan="3" class="empty"><div class="icon">⏳</div>Loading…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ REGISTER ══ -->
+  <div id="page-register" class="page">
+    <div class="two-col">
+      <div class="card">
+        <div class="card-head"><h2>👤 Register New Student</h2></div>
+        <div class="card-body">
+          <div class="form-group">
+            <label>Full Name *</label>
+            <input type="text" id="reg-name" placeholder="e.g. Jeevitha R">
+          </div>
+          <div class="form-group">
+            <label>Roll Number *</label>
+            <input type="text" id="reg-roll" placeholder="e.g. 21CSE042">
+          </div>
+          <div class="form-group">
+            <label>Department</label>
+            <select id="reg-dept">
+              <option value="">Select Department</option>
+              <option>Computer Science</option>
+              <option>Electronics</option>
+              <option>Mechanical</option>
+              <option>Civil</option>
+              <option>Electrical</option>
+              <option>Information Technology</option>
+            </select>
+          </div>
+          <div class="btn-row">
+            <button class="btn btn-primary" onclick="addStudent()">➕ Add Student</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h2>📸 Capture Face</h2></div>
+        <div class="card-body">
+          <div class="video-wrap" style="margin-bottom:1rem;">
+            <img src="/video_feed" alt="Camera">
+          </div>
+
+          <div class="form-group">
+            <label>Select Student to Capture Face</label>
+            <select id="capture-student"></select>
+          </div>
+
+          <button class="btn btn-success" id="capture-btn" onclick="captureFace()">
+            📸 Start Face Capture
+          </button>
+
+          <div id="capture-progress">
+            <div style="font-size:0.82rem;color:var(--muted);" id="capture-msg">Capturing face samples…</div>
+            <div id="capture-bar-wrap"><div id="capture-bar"></div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ ATTENDANCE ══ -->
+  <div id="page-attendance" class="page">
+    <div class="card">
+      <div class="card-head">
+        <h2>📋 Attendance Records</h2>
+        <div class="filter-row" style="margin:0;">
+          <input type="date" id="att-date">
+          <button class="btn btn-primary" onclick="loadAttendance()">🔍 View</button>
+          <button class="btn btn-outline" onclick="exportExcel()">⬇ Export Excel</button>
+        </div>
+      </div>
+      <div class="card-body">
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Name</th>
+                <th>Roll No</th>
+                <th>Department</th>
+                <th>Time In</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="att-table">
+              <tr><td colspan="6" class="empty"><div class="icon">📅</div>Select a date and click View</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ STUDENTS ══ -->
+  <div id="page-students" class="page">
+    <div class="card">
+      <div class="card-head">
+        <h2>🗂 Registered Students</h2>
+        <button class="btn btn-primary" onclick="loadStudents()">🔄 Refresh</button>
+      </div>
+      <div class="card-body">
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Name</th>
+                <th>Roll No</th>
+                <th>Department</th>
+                <th>Registered On</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="students-table">
+              <tr><td colspan="6" class="empty"><div class="icon">⏳</div>Loading…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</main>
+
+<div id="toast-container"></div>
+
+<script>
+// ── Utilities ──────────────────────────────────────────────────────────────────
+function toast(msg, type="info") {
+  const t = document.createElement("div");
+  t.className = `toast ${type}`;
+  t.textContent = msg;
+  document.getElementById("toast-container").appendChild(t);
+  setTimeout(() => t.remove(), 3500);
+}
+
+function switchTab(tab) {
+  document.querySelectorAll(".page").forEach(p => p.classList.remove("active"));
+  document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+  document.getElementById(`page-${tab}`).classList.add("active");
+  event.currentTarget.classList.add("active");
+  if (tab === "students")   loadStudents();
+  if (tab === "attendance") { setTodayDate(); loadAttendance(); }
+  if (tab === "register")   loadCaptureDropdown();
+  if (tab === "dashboard")  refreshDashboard();
+}
+
+function setTodayDate() {
+  const el = document.getElementById("att-date");
+  if (!el.value) el.value = new Date().toISOString().split("T")[0];
+}
+
+// ── Dashboard ──────────────────────────────────────────────────────────────────
+async function refreshDashboard() {
+  const [stats, rows] = await Promise.all([
+    fetch("/api/attendance/stats").then(r => r.json()),
+    fetch("/api/attendance?date=" + new Date().toISOString().split("T")[0]).then(r => r.json())
+  ]);
+
+  document.getElementById("stat-total").textContent   = stats.total;
+  document.getElementById("stat-present").textContent = stats.present;
+  document.getElementById("stat-absent").textContent  = stats.absent;
+
+  const pct = stats.total ? Math.round((stats.present / stats.total) * 100) : 0;
+  document.getElementById("progress-bar").style.width = pct + "%";
+  document.getElementById("rate-text").textContent     = pct + "%";
+
+  const tbody = document.getElementById("today-table");
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="3"><div class="empty"><div class="icon">🕐</div>No attendance marked yet</div></td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map(r => `
+    <tr>
+      <td><strong>${r.name}</strong></td>
+      <td><span class="badge badge-blue">${r.roll_no}</span></td>
+      <td><span class="badge badge-green">✅ ${r.time_in}</span></td>
+    </tr>
+  `).join("");
+}
+
+// ── Register ──────────────────────────────────────────────────────────────────
+async function addStudent() {
+  const name    = document.getElementById("reg-name").value.trim();
+  const roll_no = document.getElementById("reg-roll").value.trim();
+  const dept    = document.getElementById("reg-dept").value;
+
+  if (!name || !roll_no) { toast("Name and Roll No are required", "error"); return; }
+
+  const res = await fetch("/api/students", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, roll_no, dept })
+  });
+  const data = await res.json();
+
+  if (data.error) { toast(data.error, "error"); return; }
+
+  toast(`✅ ${name} registered! Now capture their face.`, "success");
+  document.getElementById("reg-name").value = "";
+  document.getElementById("reg-roll").value = "";
+  document.getElementById("reg-dept").value = "";
+  loadCaptureDropdown();
+}
+
+async function loadCaptureDropdown() {
+  const students = await fetch("/api/students").then(r => r.json());
+  const sel = document.getElementById("capture-student");
+  sel.innerHTML = students.length
+    ? students.map(s => `<option value="${s.id}">${s.name} (${s.roll_no})</option>`).join("")
+    : `<option value="">No students registered yet</option>`;
+}
+
+async function captureFace() {
+  const sid = document.getElementById("capture-student").value;
+  if (!sid) { toast("Please select a student", "error"); return; }
+
+  const btn = document.getElementById("capture-btn");
+  const prog = document.getElementById("capture-progress");
+  const bar  = document.getElementById("capture-bar");
+  const msg  = document.getElementById("capture-msg");
+
+  btn.disabled = true;
+  prog.style.display = "block";
+  bar.style.width = "0%";
+  msg.textContent = "Capturing… look at the camera";
+
+  // Animate bar during capture
+  let pct = 0;
+  const interval = setInterval(() => {
+    pct = Math.min(pct + 4, 90);
+    bar.style.width = pct + "%";
+  }, 150);
+
+  try {
+    const res  = await fetch("/api/capture", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ student_id: parseInt(sid) })
+    });
+    const data = await res.json();
+    clearInterval(interval);
+
+    if (data.error) {
+      toast(data.error, "error");
+      bar.style.width = "0%";
+      msg.textContent = "Capture failed. Try again.";
+    } else {
+      bar.style.width = "100%";
+      msg.textContent = `✅ Captured ${data.samples} samples successfully!`;
+      toast("Face registered successfully!", "success");
+    }
+  } catch(e) {
+    clearInterval(interval);
+    toast("Capture request failed", "error");
+  }
+  btn.disabled = false;
+}
+
+// ── Attendance ─────────────────────────────────────────────────────────────────
+async function loadAttendance() {
+  const d = document.getElementById("att-date").value || new Date().toISOString().split("T")[0];
+  const rows = await fetch(`/api/attendance?date=${d}`).then(r => r.json());
+  const tbody = document.getElementById("att-table");
+
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="6"><div class="empty"><div class="icon">📭</div>No attendance on ${d}</div></td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = rows.map((r, i) => `
+    <tr>
+      <td>${i+1}</td>
+      <td><strong>${r.name}</strong></td>
+      <td><span class="badge badge-blue">${r.roll_no}</span></td>
+      <td>${r.dept || "—"}</td>
+      <td>${r.time_in}</td>
+      <td><span class="badge badge-green">✅ Present</span></td>
+    </tr>
+  `).join("");
+}
+
+function exportExcel() {
+  const d = document.getElementById("att-date").value || new Date().toISOString().split("T")[0];
+  window.location.href = `/api/export?date=${d}`;
+  toast("⬇ Downloading Excel report…", "info");
+}
+
+// ── Students ──────────────────────────────────────────────────────────────────
+async function loadStudents() {
+  const students = await fetch("/api/students").then(r => r.json());
+  const tbody = document.getElementById("students-table");
+
+  if (!students.length) {
+    tbody.innerHTML = `<tr><td colspan="6"><div class="empty"><div class="icon">👥</div>No students registered yet</div></td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = students.map((s, i) => `
+    <tr>
+      <td>${i+1}</td>
+      <td><strong>${s.name}</strong></td>
+      <td><span class="badge badge-blue">${s.roll_no}</span></td>
+      <td>${s.dept || "—"}</td>
+      <td>${s.created ? s.created.split(" ")[0] : "—"}</td>
+      <td>
+        <button class="btn btn-danger" style="padding:5px 10px;font-size:0.78rem;"
+          onclick="deleteStudent(${s.id}, '${s.name}')">🗑 Delete</button>
+      </td>
+    </tr>
+  `).join("");
+}
+
+async function deleteStudent(id, name) {
+  if (!confirm(`Delete ${name}? This will remove all their attendance records.`)) return;
+  await fetch(`/api/students/${id}`, { method: "DELETE" });
+  toast(`${name} removed`, "info");
+  loadStudents();
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+refreshDashboard();
+setInterval(refreshDashboard, 8000);   // auto-refresh every 8s
+setTodayDate();
+</script>
+</body>
+</html>
