@@ -558,5 +558,6 @@ def delete_student(sid):
     return jsonify({"success": True})
 
 if __name__ == "__main__":
-    print("[Face Recognition] Attendance System running -> http://localhost:5000")
-    app.run(debug=False, threaded=True, host="0.0.0.0", port=5000)
+    port = int(os.environ.get("PORT", 5000))
+    print(f"[Face Recognition] Attendance System running -> http://localhost:{port}")
+    app.run(debug=False, threaded=True, host="0.0.0.0", port=port)
