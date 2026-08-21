@@ -1,5 +1,8 @@
 import os
-import cv2
+try:
+    import cv2
+except ImportError:
+    cv2 = None
 import pickle
 import sqlite3
 import numpy as np
@@ -59,20 +62,27 @@ known_encodings = []
 known_ids       = []
 recognition_lock = threading.Lock()
 
+ENCODING_VERSION = 2  # bump when feature format changes
+
 def load_encodings():
     global known_encodings, known_ids
     if os.path.exists(ENCODINGS_PATH):
         with open(ENCODINGS_PATH, "rb") as f:
             data = pickle.load(f)
-        known_encodings = data.get("encodings", [])
-        known_ids       = data.get("ids", [])
+        if data.get("version") == ENCODING_VERSION:
+            known_encodings = data.get("encodings", [])
+            known_ids       = data.get("ids", [])
+        else:
+            print(f"[Face Recognition] Old encoding format (v{data.get('version', 0)}) discarded — please re-register faces.")
+            known_encodings = []
+            known_ids       = []
     else:
         known_encodings = []
         known_ids       = []
 
 def save_encodings():
     with open(ENCODINGS_PATH, "wb") as f:
-        pickle.dump({"encodings": known_encodings, "ids": known_ids}, f)
+        pickle.dump({"version": ENCODING_VERSION, "encodings": known_encodings, "ids": known_ids}, f)
 
 load_encodings()
 
@@ -83,13 +93,56 @@ last_frame  = None
 last_recognized = {}   # student_id -> timestamp
 COOLDOWN    = 5        # seconds between re-marking same person
 
-face_cascade = cv2.CascadeClassifier(
-    cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-)
+try:
+    face_cascade = cv2.CascadeClassifier(
+        cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+    )
+    eye_cascade = cv2.CascadeClassifier(
+        cv2.data.haarcascades + "haarcascade_eye.xml"
+    )
+except Exception:
+    face_cascade = None
+    eye_cascade = None
+
+def align_face(face_img):
+    """Align face based on eye positions for consistent encoding."""
+    if cv2 is None:
+        return face_img
+    try:
+        gray = cv2.cvtColor(face_img, cv2.COLOR_BGR2GRAY) if len(face_img.shape) == 3 else face_img
+        h, w = gray.shape[:2]
+
+        eyes = []
+        if eye_cascade is not None:
+            eyes = eye_cascade.detectMultiScale(gray, 1.1, 5, minSize=(10, 10))
+
+        if len(eyes) >= 2:
+            # Sort eyes by x-coordinate to get left and right eye
+            eyes = sorted(eyes, key=lambda e: int(e[0]))
+            left_eye  = eyes[0]
+            right_eye = eyes[1]
+            # Centers (cast to Python int for OpenCV compatibility)
+            lx = int(left_eye[0])  + int(left_eye[2])  // 2
+            ly = int(left_eye[1])  + int(left_eye[3])  // 2
+            rx = int(right_eye[0]) + int(right_eye[2]) // 2
+            ry = int(right_eye[1]) + int(right_eye[3]) // 2
+            # Angle
+            angle = float(np.degrees(np.arctan2(ry - ly, rx - lx)))
+            # Center between eyes
+            cx, cy = (lx + rx) // 2, (ly + ry) // 2
+            # Rotation matrix
+            M = cv2.getRotationMatrix2D((cx, cy), angle, 1.0)
+            face_img = cv2.warpAffine(face_img, M, (w, h))
+    except Exception:
+        pass  # if alignment fails, return original face
+    return face_img
 
 def get_camera():
     global camera
     with camera_lock:
+        if cv2 is None:
+            camera = None
+            return None
         if camera is None or not camera.isOpened():
             camera = cv2.VideoCapture(0)
             camera.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
@@ -104,20 +157,112 @@ def release_camera():
         camera = None
 
 def compute_encoding(face_img):
-    """Simple LBP-style mean encoding (no dlib dependency)."""
-    gray = cv2.cvtColor(face_img, cv2.COLOR_BGR2GRAY) if len(face_img.shape) == 3 else face_img
-    resized = cv2.resize(gray, (64, 64))
-    # Normalize pixel values as feature vector
-    return resized.flatten().astype(np.float32) / 255.0
+    """Discriminative encoding using face alignment + HOG + histogram features."""
+    if cv2 is None:
+        return np.zeros(100, dtype=np.float32)
 
-def compare_encodings(known_encs, candidate, threshold=0.45):
-    """Return index of best match, or -1."""
+    # Align face using eye positions
+    face_img = align_face(face_img)
+
+    # Convert to grayscale
+    gray = cv2.cvtColor(face_img, cv2.COLOR_BGR2GRAY) if len(face_img.shape) == 3 else face_img
+
+    # Resize to standard size
+    face_size = 64
+    gray = cv2.resize(gray, (face_size, face_size))
+
+    # Apply CLAHE for illumination normalization
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    gray = clahe.apply(gray)
+
+    # --- HOG features (captures edge/shape structure) ---
+    hog = cv2.HOGDescriptor(
+        _winSize=(face_size, face_size),
+        _blockSize=(16, 16),
+        _blockStride=(8, 8),
+        _cellSize=(8, 8),
+        _nbins=9,
+        _derivAperture=1,
+        _winSigma=-1,
+        _histogramNormType=cv2.HOGDescriptor_L2Hys,
+        _L2HysThreshold=0.2,
+        _gammaCorrection=True,
+        _nlevels=cv2.HOGDescriptor_DEFAULT_NLEVELS
+    )
+    hog_features = hog.compute(gray).flatten().astype(np.float32)
+
+    # Normalize HOG
+    norm = np.linalg.norm(hog_features)
+    if norm > 0:
+        hog_features = hog_features / norm
+
+    # --- Grayscale histogram (captures intensity distribution) ---
+    hist = cv2.calcHist([gray], [0], None, [64], [0, 256]).flatten().astype(np.float32)
+    norm = np.linalg.norm(hist)
+    if norm > 0:
+        hist = hist / norm
+
+    # Combine features with histogram weighted lower
+    features = np.concatenate([hog_features, hist * 0.5])
+    return features
+
+def compare_encodings(known_encs, candidate, threshold=0.60):
+    """Group-based mean distance comparison with ratio check.
+
+    Instead of simple vote counting, this:
+    1. Groups all samples by student
+    2. Computes mean of best-K distances per student (more robust)
+    3. Requires the best match to be significantly better than the runner-up
+    """
     if not known_encs:
         return -1, 1.0
-    diffs = [np.linalg.norm(np.array(e) - candidate) / np.sqrt(len(candidate))
-             for e in known_encs]
-    idx   = int(np.argmin(diffs))
-    return (idx, diffs[idx]) if diffs[idx] < threshold else (-1, diffs[idx])
+
+    candidate = np.array(candidate, dtype=np.float32)
+
+    # Compute distances from candidate to every stored encoding
+    diffs = []
+    for e in known_encs:
+        enc = np.array(e, dtype=np.float32)
+        if enc.shape != candidate.shape:
+            diffs.append(1.0)  # dimension mismatch → no match
+        else:
+            diffs.append(float(np.linalg.norm(enc - candidate)))
+
+    # Group distances by student_id
+    student_dists = {}
+    for i, d in enumerate(diffs):
+        sid = known_ids[i]
+        student_dists.setdefault(sid, []).append(d)
+
+    if not student_dists:
+        return -1, 1.0
+
+    # Compute mean of the K closest samples per student (robust aggregate)
+    K = min(5, min(len(v) for v in student_dists.values()) or 1)
+    student_mean = {}
+    for sid, dists in student_dists.items():
+        top_k = sorted(dists)[:K]
+        student_mean[sid] = sum(top_k) / len(top_k)
+
+    # Rank students by mean distance
+    ranked = sorted(student_mean.items(), key=lambda x: x[1])
+    best_sid, best_mean = ranked[0]
+
+    # Must be below threshold
+    if best_mean >= threshold:
+        return -1, best_mean
+
+    # Ratio check: best must be clearly better than second-best
+    if len(ranked) > 1:
+        second_mean = ranked[1][1]
+        if second_mean > 0 and (best_mean / second_mean) > 0.90:
+            return -1, best_mean  # too ambiguous
+
+    best_idx = min(
+        (i for i, sid in enumerate(known_ids) if sid == best_sid),
+        key=lambda i: diffs[i]
+    )
+    return best_idx, best_mean
 
 def mark_attendance(student_id):
     now  = datetime.now()
@@ -136,52 +281,67 @@ def mark_attendance(student_id):
 def gen_frames():
     global last_frame, last_recognized
     cam = get_camera()
+    if cam is None:
+        return
     while True:
-        ok, frame = cam.read()
-        if not ok:
+        try:
+            ok, frame = cam.read()
+            if not ok:
+                time.sleep(0.05)
+                continue
+
+            gray  = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            faces = []
+            if face_cascade is not None:
+                faces = face_cascade.detectMultiScale(gray, 1.1, 5, minSize=(80, 80))
+
+            for (x, y, w, h) in faces:
+                try:
+                    face_crop = frame[y:y+h, x:x+w]
+                    enc       = compute_encoding(face_crop)
+
+                    with recognition_lock:
+                        idx, dist = compare_encodings(known_encodings, enc)
+
+                    label = "Unknown"
+                    color = (0, 0, 220)
+
+                    if idx != -1:
+                        sid = known_ids[idx]
+                        conn = get_db()
+                        row  = conn.execute("SELECT name, roll_no FROM students WHERE id=?", (sid,)).fetchone()
+                        conn.close()
+                        if row:
+                            label = f"{row['name']} ({row['roll_no']}) [{dist:.3f}]"
+                            color = (0, 200, 60)
+                            now_ts = time.time()
+                            if sid not in last_recognized or (now_ts - last_recognized[sid]) > COOLDOWN:
+                                last_recognized[sid] = now_ts
+                                mark_attendance(sid)
+                    else:
+                        # Show nearest distance for debugging
+                        label = f"Unknown ({dist:.3f})"
+                except Exception:
+                    label = "Unknown"
+                    color = (0, 0, 220)
+
+                cv2.rectangle(frame, (x, y), (x+w, y+h), color, 2)
+                cv2.rectangle(frame, (x, y-30), (x+w, y), color, -1)
+                cv2.putText(frame, label, (x+4, y-8),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255,255,255), 1)
+
+            # Timestamp overlay
+            ts = datetime.now().strftime("%d-%m-%Y  %H:%M:%S")
+            cv2.putText(frame, ts, (10, frame.shape[0]-10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200,200,200), 1)
+
+            last_frame = frame.copy()
+            ret, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            if ret:
+                yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buf.tobytes() + b"\r\n")
+        except Exception:
             time.sleep(0.05)
             continue
-
-        gray  = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces = face_cascade.detectMultiScale(gray, 1.1, 5, minSize=(80, 80))
-
-        for (x, y, w, h) in faces:
-            face_crop = frame[y:y+h, x:x+w]
-            enc       = compute_encoding(face_crop)
-
-            with recognition_lock:
-                idx, dist = compare_encodings(known_encodings, enc)
-
-            label = "Unknown"
-            color = (0, 0, 220)
-
-            if idx != -1:
-                sid = known_ids[idx]
-                conn = get_db()
-                row  = conn.execute("SELECT name, roll_no FROM students WHERE id=?", (sid,)).fetchone()
-                conn.close()
-                if row:
-                    label = f"{row['name']} ({row['roll_no']})"
-                    color = (0, 200, 60)
-                    now_ts = time.time()
-                    if sid not in last_recognized or (now_ts - last_recognized[sid]) > COOLDOWN:
-                        last_recognized[sid] = now_ts
-                        mark_attendance(sid)
-
-            cv2.rectangle(frame, (x, y), (x+w, y+h), color, 2)
-            cv2.rectangle(frame, (x, y-30), (x+w, y), color, -1)
-            cv2.putText(frame, label, (x+4, y-8),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255,255,255), 1)
-
-        # Timestamp overlay
-        ts = datetime.now().strftime("%d-%m-%Y  %H:%M:%S")
-        cv2.putText(frame, ts, (10, frame.shape[0]-10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200,200,200), 1)
-
-        last_frame = frame.copy()
-        ret, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
-        if ret:
-            yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buf.tobytes() + b"\r\n")
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
 @app.route("/")
@@ -190,6 +350,8 @@ def index():
 
 @app.route("/video_feed")
 def video_feed():
+    if cv2 is None:
+        return Response("Camera unavailable in this environment.", mimetype="text/plain")
     return Response(gen_frames(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
 @app.route("/api/students", methods=["GET"])
@@ -228,6 +390,9 @@ def capture_face():
     sid  = data.get("student_id")
     if sid is None:
         return jsonify({"error": "student_id required"}), 400
+
+    if cv2 is None or face_cascade is None:
+        return jsonify({"error": "Camera features are unavailable in this environment."}), 400
 
     cam = get_camera()
     samples = []
@@ -393,5 +558,5 @@ def delete_student(sid):
     return jsonify({"success": True})
 
 if __name__ == "__main__":
-    print("🎓 Attendance System running → http://localhost:5000")
+    print("[Face Recognition] Attendance System running -> http://localhost:5000")
     app.run(debug=False, threaded=True, host="0.0.0.0", port=5000)
