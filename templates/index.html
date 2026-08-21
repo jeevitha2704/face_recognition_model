@@ -204,11 +204,20 @@
     aspect-ratio: 4/3;
   }
 
+  .video-wrap video,
   .video-wrap img {
     width: 100%;
     height: 100%;
     object-fit: cover;
     display: block;
+  }
+
+  .video-wrap canvas.face-overlay {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
   }
 
   .video-overlay {
@@ -219,6 +228,7 @@
     color: #fff;
     font-size: 0.75rem;
     font-weight: 500;
+    z-index: 2;
   }
 
   /* ── Form ── */
@@ -436,10 +446,12 @@
       <div class="card">
         <div class="card-head">
           <h2>📷 Live Camera Feed</h2>
+          <span id="cam-status" style="font-size:0.78rem;color:var(--muted);">Starting camera…</span>
         </div>
         <div class="card-body">
-          <div class="video-wrap">
-            <img src="/video_feed" alt="Live Feed">
+          <div class="video-wrap" id="main-video-wrap">
+            <video id="main-video" autoplay playsinline muted></video>
+            <canvas id="main-canvas" class="face-overlay"></canvas>
             <div class="video-overlay">Auto-marking attendance when face is recognized</div>
           </div>
         </div>
@@ -516,7 +528,8 @@
         <div class="card-head"><h2>📸 Capture Face</h2></div>
         <div class="card-body">
           <div class="video-wrap" style="margin-bottom:1rem;">
-            <img src="/video_feed" alt="Camera">
+            <video id="capture-video" autoplay playsinline muted></video>
+            <canvas id="capture-canvas" class="face-overlay"></canvas>
           </div>
 
           <div class="form-group">
@@ -694,6 +707,9 @@ async function captureFace() {
   const sid = document.getElementById("capture-student").value;
   if (!sid) { toast("Please select a student", "error"); return; }
 
+  const video = document.getElementById("capture-video") || document.getElementById("main-video");
+  if (!video || video.readyState < 2) { toast("Camera not ready. Please allow camera access.", "error"); return; }
+
   const btn = document.getElementById("capture-btn");
   const prog = document.getElementById("capture-progress");
   const bar  = document.getElementById("capture-bar");
@@ -702,23 +718,27 @@ async function captureFace() {
   btn.disabled = true;
   prog.style.display = "block";
   bar.style.width = "0%";
-  msg.textContent = "Capturing… look at the camera";
+  msg.textContent = "Capturing face samples… look at the camera";
 
-  // Animate bar during capture
-  let pct = 0;
-  const interval = setInterval(() => {
-    pct = Math.min(pct + 4, 90);
-    bar.style.width = pct + "%";
-  }, 150);
+  // Capture 25 frames over ~2.5 seconds
+  const frames = [];
+  const totalFrames = 25;
+  for (let i = 0; i < totalFrames; i++) {
+    frames.push(captureFrame(video));
+    bar.style.width = Math.round((i / totalFrames) * 50) + "%";
+    await new Promise(r => setTimeout(r, 100));
+  }
+
+  msg.textContent = "Processing face samples…";
+  bar.style.width = "60%";
 
   try {
     const res  = await fetch("/api/capture", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ student_id: parseInt(sid) })
+      body: JSON.stringify({ student_id: parseInt(sid), frames: frames })
     });
     const data = await res.json();
-    clearInterval(interval);
 
     if (data.error) {
       toast(data.error, "error");
@@ -730,7 +750,6 @@ async function captureFace() {
       toast("Face registered successfully!", "success");
     }
   } catch(e) {
-    clearInterval(interval);
     toast("Capture request failed", "error");
   }
   btn.disabled = false;
@@ -797,10 +816,96 @@ async function deleteStudent(id, name) {
   loadStudents();
 }
 
+// ── Browser Camera & Face Recognition ──────────────────────────────────────────
+let cameraStream = null;
+let processTimer = null;
+const PROCESS_INTERVAL = 800; // ms between frame sends (≈1.2 fps recognition)
+
+async function initCamera() {
+  const statusEl = document.getElementById("cam-status");
+  try {
+    cameraStream = await navigator.mediaDevices.getUserMedia({
+      video: { width: 640, height: 480, facingMode: "user" },
+      audio: false
+    });
+    // Attach stream to all video elements
+    document.querySelectorAll("video").forEach(v => {
+      v.srcObject = cameraStream;
+    });
+    if (statusEl) statusEl.textContent = "🟢 Camera active";
+    // Start frame processing loop
+    startProcessing();
+  } catch (err) {
+    if (statusEl) statusEl.textContent = "🔴 Camera denied";
+    console.error("Camera error:", err);
+  }
+}
+
+function captureFrame(videoEl) {
+  const canvas = document.createElement("canvas");
+  canvas.width = videoEl.videoWidth || 640;
+  canvas.height = videoEl.videoHeight || 480;
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL("image/jpeg", 0.7);
+}
+
+function startProcessing() {
+  if (processTimer) clearInterval(processTimer);
+  processTimer = setInterval(async () => {
+    const video = document.getElementById("main-video");
+    const canvas = document.getElementById("main-canvas");
+    if (!video || !canvas || video.readyState < 2) return;
+
+    try {
+      const frame = captureFrame(video);
+      const res = await fetch("/api/process-frame", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image: frame })
+      });
+      const data = await res.json();
+      drawFaces(canvas, video, data.faces || []);
+    } catch (e) {
+      // Silently skip processing errors
+    }
+  }, PROCESS_INTERVAL);
+}
+
+function drawFaces(canvas, video, faces) {
+  const ctx = canvas.getContext("2d");
+  canvas.width = video.videoWidth || 640;
+  canvas.height = video.videoHeight || 480;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // Scale factors: canvas coords match video coords
+  for (const f of faces) {
+    const color = f.recognized ? "#00C83C" : "#DC2626";
+    const bgColor = f.recognized ? "rgba(0,200,60,0.85)" : "rgba(220,38,38,0.85)";
+
+    // Draw box
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 3;
+    ctx.strokeRect(f.x, f.y, f.w, f.h);
+
+    // Draw label background
+    const label = f.recognized ? f.label : `Unknown (${f.distance})`;
+    ctx.font = "bold 14px 'Segoe UI', sans-serif";
+    const tw = ctx.measureText(label).width;
+    ctx.fillStyle = bgColor;
+    ctx.fillRect(f.x, f.y - 28, tw + 12, 26);
+
+    // Draw label text
+    ctx.fillStyle = "#fff";
+    ctx.fillText(label, f.x + 6, f.y - 10);
+  }
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 refreshDashboard();
-setInterval(refreshDashboard, 8000);   // auto-refresh every 8s
+setInterval(refreshDashboard, 8000);
 setTodayDate();
+initCamera();
 </script>
 </body>
 </html>

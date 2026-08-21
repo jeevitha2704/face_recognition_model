@@ -15,6 +15,7 @@ import threading
 import time
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024  # 16 MB max for frame uploads
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
@@ -354,6 +355,70 @@ def video_feed():
         return Response("Camera unavailable in this environment.", mimetype="text/plain")
     return Response(gen_frames(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
+@app.route("/api/process-frame", methods=["POST"])
+def process_frame():
+    """Process a frame sent from the browser's webcam.
+
+    Accepts a base64-encoded JPEG, runs face detection + recognition,
+    and returns face bounding boxes with labels.
+    """
+    if cv2 is None or face_cascade is None:
+        return jsonify({"faces": []})
+
+    try:
+        data = request.get_json()
+        image_data = data.get("image", "")
+        # Strip data URL prefix if present
+        if "," in image_data:
+            image_data = image_data.split(",", 1)[1]
+
+        img_bytes = base64.b64decode(image_data)
+        nparr = np.frombuffer(img_bytes, np.uint8)
+        frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+        if frame is None:
+            return jsonify({"faces": []})
+
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        faces = face_cascade.detectMultiScale(gray, 1.1, 5, minSize=(80, 80))
+
+        results = []
+        for (x, y, w, h) in faces:
+            face_crop = frame[y:y+h, x:x+w]
+            enc = compute_encoding(face_crop)
+
+            with recognition_lock:
+                idx, dist = compare_encodings(known_encodings, enc)
+
+            face_info = {
+                "x": int(x), "y": int(y), "w": int(w), "h": int(h),
+                "label": "Unknown",
+                "distance": round(float(dist), 3),
+                "recognized": False,
+                "student_id": None,
+            }
+
+            if idx != -1:
+                sid = known_ids[idx]
+                conn = get_db()
+                row = conn.execute("SELECT name, roll_no FROM students WHERE id=?", (sid,)).fetchone()
+                conn.close()
+                if row:
+                    face_info["label"] = f"{row['name']} ({row['roll_no']})"
+                    face_info["recognized"] = True
+                    face_info["student_id"] = sid
+
+                    now_ts = time.time()
+                    if sid not in last_recognized or (now_ts - last_recognized[sid]) > COOLDOWN:
+                        last_recognized[sid] = now_ts
+                        mark_attendance(sid)
+
+            results.append(face_info)
+
+        return jsonify({"faces": results})
+    except Exception as e:
+        return jsonify({"faces": [], "error": str(e)})
+
 @app.route("/api/students", methods=["GET"])
 def get_students():
     conn = get_db()
@@ -385,36 +450,44 @@ def add_student():
 
 @app.route("/api/capture", methods=["POST"])
 def capture_face():
-    """Capture face samples from current camera frame for a student."""
+    """Capture face samples from browser-sent frames for a student."""
     data = request.json
     sid  = data.get("student_id")
     if sid is None:
         return jsonify({"error": "student_id required"}), 400
 
     if cv2 is None or face_cascade is None:
-        return jsonify({"error": "Camera features are unavailable in this environment."}), 400
+        return jsonify({"error": "OpenCV is unavailable in this environment."}), 400
 
-    cam = get_camera()
+    frames = data.get("frames", [])
+    if not frames:
+        return jsonify({"error": "No frames received. Ensure camera is active."}), 400
+
     samples = []
-    attempts = 0
-    while len(samples) < 20 and attempts < 60:
-        ok, frame = cam.read()
-        attempts += 1
-        if not ok:
-            time.sleep(0.05)
+    for frame_data in frames:
+        if "," in frame_data:
+            frame_data = frame_data.split(",", 1)[1]
+        try:
+            img_bytes = base64.b64decode(frame_data)
+            nparr = np.frombuffer(img_bytes, np.uint8)
+            frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            if frame is None:
+                continue
+            gray  = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            faces = face_cascade.detectMultiScale(gray, 1.1, 5, minSize=(80, 80))
+            for (x, y, w, h) in faces:
+                face_crop = frame[y:y+h, x:x+w]
+                enc = compute_encoding(face_crop)
+                samples.append(enc)
+                if len(samples) >= 20:
+                    break
+        except Exception:
             continue
-        gray  = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces = face_cascade.detectMultiScale(gray, 1.1, 5, minSize=(80, 80))
-        for (x, y, w, h) in faces:
-            face_crop = frame[y:y+h, x:x+w]
-            enc = compute_encoding(face_crop)
-            samples.append(enc)
-            if len(samples) >= 20:
-                break
-        time.sleep(0.05)
+        if len(samples) >= 20:
+            break
 
     if len(samples) < 5:
-        return jsonify({"error": "Could not capture enough face samples. Ensure face is visible."}), 400
+        return jsonify({"error": "Could not capture enough face samples. Ensure face is visible and well-lit."}), 400
 
     with recognition_lock:
         # Remove existing encodings for this student
